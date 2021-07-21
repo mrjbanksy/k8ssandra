@@ -23,7 +23,7 @@ Create chart name and version as used by the chart label.
 
 {{- define "k8ssandra-common.labels" }}
 {{ include "common.labels.standard" . }}
-app.kubernetes.io/part-of: k8ssandra-{{ .Release.Name }}-{{ .Release.Namespace }}
+app.kubernetes.io/part-of: {{ printf "k8ssandra-%s-%s" .Release.Name .Release.Namespace | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
@@ -32,7 +32,7 @@ Selector labels
 {{- define "k8ssandra-common.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "k8ssandra-common.name" . | replace "\n" "" }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/part-of: k8ssandra-{{ .Release.Name }}-{{ .Release.Namespace }}
+app.kubernetes.io/part-of: {{ printf "k8ssandra-%s-%s" .Release.Name .Release.Namespace | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
