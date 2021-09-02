@@ -3,10 +3,11 @@ package unit_test
 import (
 	"encoding/json"
 	"fmt"
-	helmUtils "github.com/k8ssandra/k8ssandra/tests/unit/utils/helm"
-	"github.com/k8ssandra/k8ssandra/tests/unit/utils/kubeapi"
 	"path/filepath"
 	"strconv"
+
+	helmUtils "github.com/k8ssandra/k8ssandra/tests/unit/utils/helm"
+	"github.com/k8ssandra/k8ssandra/tests/unit/utils/kubeapi"
 
 	"github.com/gruntwork-io/terratest/modules/helm"
 	cassdcv1beta1 "github.com/k8ssandra/cass-operator/operator/pkg/apis/cassandra/v1beta1"
@@ -103,7 +104,6 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			options := &helm.Options{
 				KubectlOptions: defaultKubeCtlOptions,
 			}
-
 			Expect(renderTemplate(options)).To(Succeed())
 
 			Expect(cassdc.Kind).To(Equal("CassandraDatacenter"))
@@ -135,16 +135,30 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			// JVM heap options -- default to settings as defined in cassdc.yaml
 			var config Config
 			Expect(json.Unmarshal(cassdc.Spec.Config, &config)).To(Succeed())
-			Expect(config.JvmOptions).ToNot(BeNil())
-			Expect(config.JvmOptions.InitialHeapSize).To(BeEmpty())
-			Expect(config.JvmOptions.MaxHeapSize).To(BeEmpty())
-			Expect(config.JvmOptions.YoungGenSize).To(BeEmpty())
+			Expect(config.JvmServerOptions).ToNot(BeNil())
+			Expect(config.JvmServerOptions.InitialHeapSize).To(BeEmpty())
+			Expect(config.JvmServerOptions.MaxHeapSize).To(BeEmpty())
+			Expect(config.JvmServerOptions.YoungGenSize).To(BeEmpty())
 
 			// Default set of volume and volume mounts
 			Expect(kubeapi.GetVolumeMountNames(&initContainers[0])).To(ConsistOf(CassandraConfigVolumeName,
 				CassandraMetricsCollConfigVolumeName, CassandraTmpVolumeName))
 			Expect(kubeapi.GetVolumeNames(cassdc.Spec.PodTemplateSpec)).To(ConsistOf(CassandraConfigVolumeName,
 				CassandraMetricsCollConfigVolumeName, CassandraTmpVolumeName))
+
+			// Default security context for containers
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			AssertContainerSecurityContextNotExists(cassdc, MedusaContainer, MedusaInitContainer)
+
+			// TODO - this will change once mgmt-api root access needs are addressed.
+			isReadOnlyRootFilesystemAllowed := false
+			expectedCtx := corev1.SecurityContext{ReadOnlyRootFilesystem: &isReadOnlyRootFilesystemAllowed}
+			AssertContainerSecurityContextExistsAndMatches(cassdc, CassandraContainer, expectedCtx)
+
+			// Default pod security context for cassdc
+			Expect(cassdc.Spec.PodTemplateSpec.Spec.SecurityContext).ToNot(BeNil())
 		})
 
 		It("is not rendered if disabled", func() {
@@ -195,7 +209,6 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			}
 
 			Expect(renderTemplate(options)).To(Succeed())
-
 			Expect(cassdc.Name).To(Equal(dcName))
 		})
 
@@ -213,7 +226,6 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			}
 
 			Expect(renderTemplate(options)).To(Succeed())
-
 			Expect(cassdc.Spec.Size, 3)
 		})
 
@@ -333,13 +345,24 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			// No env slice should be present
 			Expect(cassdc.Spec.PodTemplateSpec.Spec.Containers[0].Env).To(BeNil())
 
-			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer, JmxCredentialsInitContainer)
+			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			// TODO - this will change once mgmt-api root access needs are addressed.
+			isReadOnlyRootFilesystemAllowed := false
+			expectedCtx := corev1.SecurityContext{ReadOnlyRootFilesystem: &isReadOnlyRootFilesystemAllowed}
+			AssertContainerSecurityContextExistsAndMatches(cassdc, CassandraContainer, expectedCtx)
+
+			AssertContainerSecurityContextNotExists(cassdc, MedusaContainer, MedusaInitContainer)
 
 			// No users should exist
 			Expect(cassdc.Spec.Users).To(BeNil())
 		})
 
-		It("enabling only medusa", func() {
+		It("enabling only medusa using custom securityContext", func() {
 			storageSecret := HelmReleaseName + "-medusa-storage"
 			options := &helm.Options{
 				SetValues: map[string]string{
@@ -347,12 +370,15 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 					"medusa.storageSecret": storageSecret,
 					"reaper.enabled":       "false",
 				},
+				ValuesFiles:    []string{"./testdata/medusa-security-context-custom-values.yaml"},
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
 			Expect(renderTemplate(options)).To(Succeed())
 
 			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer, JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
 
 			// Two containers, medusa and cassandra
 			Expect(len(cassdc.Spec.PodTemplateSpec.Spec.Containers)).To(Equal(2))
@@ -361,12 +387,24 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 
 			medusaContainer := GetContainer(cassdc, MedusaContainer)
 			medusaConfigMap := HelmReleaseName + "-medusa"
+			medusaRestoreInitContainer := GetInitContainer(cassdc, MedusaInitContainer)
 
 			Expect(kubeapi.GetVolumeMountNames(medusaContainer)).To(ConsistOf(medusaConfigMap,
 				CassandraConfigVolumeName, "server-data", storageSecret))
 			Expect(kubeapi.GetVolumeNames(cassdc.Spec.PodTemplateSpec)).To(ConsistOf(medusaConfigMap,
 				CassandraConfigVolumeName, CassandraMetricsCollConfigVolumeName, CassandraTmpVolumeName,
 				storageSecret, PodInfoVolumeName))
+
+			Expect(medusaRestoreInitContainer).ToNot(BeNil())
+			Expect(medusaRestoreInitContainer.SecurityContext).ToNot(BeNil())
+
+			// TODO - this will change once medusa root access needs are addressed.
+			Expect(*medusaRestoreInitContainer.SecurityContext.ReadOnlyRootFilesystem).To(BeFalse())
+
+			Expect(medusaContainer.SecurityContext).ToNot(BeNil())
+			// TODO - this will change once medusa root access needs are addressed.
+			Expect(*medusaContainer.SecurityContext.ReadOnlyRootFilesystem).To(BeFalse())
+
 		})
 
 		It("enabling only medusa with local storage", func() {
@@ -383,7 +421,16 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 
 			Expect(renderTemplate(options)).To(Succeed())
 
-			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer, JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			// TODO - this will change once medusa root access needs are addressed.
+			isReadOnlyRootFilesystemAllowed := false
+			expectedCtx := corev1.SecurityContext{ReadOnlyRootFilesystem: &isReadOnlyRootFilesystemAllowed}
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaInitContainer, expectedCtx)
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaContainer, expectedCtx)
 
 			// Two containers, medusa and cassandra
 			Expect(len(cassdc.Spec.PodTemplateSpec.Spec.Containers)).To(Equal(2))
@@ -425,7 +472,18 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 
 			Expect(renderTemplate(options)).To(Succeed())
 
-			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer, JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			// TODO - this will change once mgmt-api root access needs are addressed.
+			isReadOnlyRootFilesystemAllowed := false
+			expectedCtx := corev1.SecurityContext{ReadOnlyRootFilesystem: &isReadOnlyRootFilesystemAllowed}
+			AssertContainerSecurityContextExistsAndMatches(cassdc, CassandraContainer, expectedCtx)
+			// TODO - this will change once medusa root access needs are addressed.
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaInitContainer, expectedCtx)
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaContainer, expectedCtx)
 
 			// Two containers, medusa and cassandra
 			Expect(len(cassdc.Spec.PodTemplateSpec.Spec.Containers)).To(Equal(2))
@@ -455,14 +513,29 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 		It("enabling reaper and medusa", func() {
 			// Simple verification that both have properties correctly applied
 			options := &helm.Options{
-				SetValues:      map[string]string{"medusa.enabled": "true"},
+				SetValues: map[string]string{"medusa.enabled": "true"},
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
 			Expect(renderTemplate(options)).To(Succeed())
 
-			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer, JmxCredentialsInitContainer, MedusaInitContainer)
+			AssertInitContainerNamesMatch(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer, MedusaInitContainer)
+
 			AssertContainerNamesMatch(cassdc, CassandraContainer, MedusaContainer)
+
+			AssertContainerSecurityContextExists(cassdc, BaseConfigInitContainer, ConfigInitContainer,
+				JmxCredentialsInitContainer)
+
+			// TODO - this will change once mgmt-api root access needs are addressed.
+			isReadOnlyRootFilesystemAllowed := false
+			expectedCtx := corev1.SecurityContext{ReadOnlyRootFilesystem: &isReadOnlyRootFilesystemAllowed}
+			AssertContainerSecurityContextExistsAndMatches(cassdc, CassandraContainer, expectedCtx)
+
+			// TODO - this will change once medusa root access needs are addressed.
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaContainer, expectedCtx)
+			AssertContainerSecurityContextExistsAndMatches(cassdc, MedusaInitContainer, expectedCtx)
+
 		})
 
 		It("adding additionalSeeds", func() {
@@ -566,7 +639,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			options := &helm.Options{
 				KubectlOptions: defaultKubeCtlOptions,
 				SetValues: map[string]string{
-					"cassandra.version": "3.11.10",
+					"cassandra.version": "3.11.11",
 					"cassandra.datacenters[0].allocateTokensForLocalRF": "3",
 				},
 			}
@@ -640,6 +713,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version":             "3.11.11",
 					"cassandra.heap.size":           "700M",
 					"cassandra.heap.newGenSize":     "350M",
 					"cassandra.datacenters[0].name": dcName,
@@ -665,6 +739,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version":                        "3.11.11",
 					"cassandra.heap.size":                      "700M",
 					"cassandra.heap.newGenSize":                "350M",
 					"cassandra.datacenters[0].heap.size":       "300M",
@@ -690,6 +765,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version":                  "3.11.11",
 					"cassandra.datacenters[0].heap.size": "300M",
 					"cassandra.datacenters[0].name":      dcName,
 					// Note: not setting - "cassandra.datacenters[0].heap.newGenSize": "150M",
@@ -713,6 +789,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version": "3.11.11",
 					// Note: not setting "cassandra.datacenters[0].heap.size":       "300M",
 					"cassandra.datacenters[0].name":            dcName,
 					"cassandra.datacenters[0].heap.newGenSize": "150M",
@@ -736,6 +813,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version":             "3.11.11",
 					"cassandra.heap.size":           "300M",
 					"cassandra.datacenters[0].name": dcName,
 					// Note: not setting - "cassandra.heap.newGenSize": "150M",
@@ -760,6 +838,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			dcName := "dc1"
 			options := &helm.Options{
 				SetValues: map[string]string{
+					"cassandra.version": "3.11.11",
 					// Note: not setting - "cassandra.heap.size": "300M",
 					"cassandra.heap.newGenSize":     "150M",
 					"cassandra.datacenters[0].name": dcName,
@@ -996,7 +1075,7 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			Expect(config.CassandraConfig.PermissionsUpdateMillis).To(Equal(cacheUpdateInterval))
 			Expect(config.CassandraConfig.CredentialsValidityMillis).To(Equal(cacheValidityPeriod))
 			Expect(config.CassandraConfig.CredentialsUpdateMillis).To(Equal(cacheUpdateInterval))
-			Expect(config.JvmOptions.AdditionalJvmOptions).To(ConsistOf(
+			Expect(config.JvmServerOptions.AdditionalJvmOptions).To(ConsistOf(
 				"-Dcassandra.system_distributed_replication_dc_names="+dcName,
 				"-Dcassandra.system_distributed_replication_per_dc="+strconv.Itoa(clusterSize),
 			))
@@ -1302,11 +1381,12 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 
 	Context("when configuring the Cassandra version and/or image", func() {
 		cassandraVersionImageMap := map[string]string{
-			"3.11.7":  "k8ssandra/cass-management-api:3.11.7-v0.1.26",
-			"3.11.8":  "k8ssandra/cass-management-api:3.11.8-v0.1.26",
-			"3.11.9":  "k8ssandra/cass-management-api:3.11.9-v0.1.26",
-			"3.11.10": "k8ssandra/cass-management-api:3.11.10-v0.1.26",
-			"4.0.0":   "k8ssandra/cass-management-api:4.0.0-v0.1.26",
+			"3.11.7":  "k8ssandra/cass-management-api:3.11.7-v0.1.28",
+			"3.11.8":  "k8ssandra/cass-management-api:3.11.8-v0.1.28",
+			"3.11.9":  "k8ssandra/cass-management-api:3.11.9-v0.1.27",
+			"3.11.10": "k8ssandra/cass-management-api:3.11.10-v0.1.27",
+			"3.11.11": "k8ssandra/cass-management-api:3.11.11-v0.1.28",
+			"4.0.0":   "k8ssandra/cass-management-api:4.0.0-v0.1.28",
 		}
 
 		It("using the default version", func() {
@@ -1316,8 +1396,8 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 
 			Expect(renderTemplate(options)).To(Succeed())
 
-			Expect(cassdc.Spec.ServerVersion).To(Equal("3.11.10"))
-			Expect(cassdc.Spec.ServerImage).To(Equal("k8ssandra/cass-management-api:3.11.10-v0.1.26"))
+			Expect(cassdc.Spec.ServerVersion).To(Equal("4.0.0"))
+			Expect(cassdc.Spec.ServerImage).To(Equal("k8ssandra/cass-management-api:4.0.0-v0.1.28"))
 		})
 
 		It("using 3.11.7", func() {
@@ -1380,6 +1460,21 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			Expect(cassdc.Spec.ServerImage).To(Equal(cassandraVersionImageMap[version]))
 		})
 
+		It("using 3.11.11", func() {
+			version := "3.11.11"
+			options := &helm.Options{
+				KubectlOptions: defaultKubeCtlOptions,
+				SetValues: map[string]string{
+					"cassandra.version": version,
+				},
+			}
+
+			Expect(renderTemplate(options)).To(Succeed())
+
+			Expect(cassdc.Spec.ServerVersion).To(Equal(version))
+			Expect(cassdc.Spec.ServerImage).To(Equal(cassandraVersionImageMap[version]))
+		})
+
 		It("using 4.0.0", func() {
 			version := "4.0.0"
 			options := &helm.Options{
@@ -1408,8 +1503,8 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			Expect(renderedErr).To(HaveOccurred())
 		})
 
-		It("using 3.11.9 and a custom image", func() {
-			version := "3.11.9"
+		It("using 3.11.11 and a custom image", func() {
+			version := "3.11.11"
 			repository := "my_cassandra"
 			options := &helm.Options{
 				KubectlOptions: defaultKubeCtlOptions,
@@ -1476,8 +1571,8 @@ var _ = Describe("Verify CassandraDatacenter template", func() {
 			Expect(json.Unmarshal(cassdc.Spec.Config, &config)).To(Succeed())
 			Expect(config.CassandraConfig.NumTokens).To(Equal(int64(expectedTokens)))
 		},
-		Entry("3.11.10 default", "3.11.10", "", 256),
-		Entry("3.11.10 custom", "3.11.10", "16", 16),
+		Entry("3.11.11 default", "3.11.11", "", 256),
+		Entry("3.11.11 custom", "3.11.11", "16", 16),
 	)
 })
 
