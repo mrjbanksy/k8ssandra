@@ -3,7 +3,6 @@ package unit_test
 import (
 	corev1 "k8s.io/api/core/v1"
 	"path/filepath"
-	"reflect"
 
 	helmUtils "github.com/k8ssandra/k8ssandra/tests/unit/utils/helm"
 
@@ -44,7 +43,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 
 			Expect(string(reaper.Spec.ServerConfig.StorageType)).To(Equal("cassandra"))
 			Expect(reaper.Kind).To(Equal("Reaper"))
@@ -60,7 +59,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 			Expect(reaper.Spec.ServerConfig.CassandraBackend.CassandraDatacenter.Name).To(Equal(targetDcName))
 		})
 
@@ -70,7 +69,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 			Expect(reaper.Spec.ServerConfig.AutoScheduling).ToNot(BeNil())
 		})
 
@@ -83,7 +82,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 			Expect(reaper.Spec.ServerConfig.AutoScheduling).ToNot(BeNil())
 			Expect(reaper.Spec.ServerConfig.AutoScheduling.InitialDelay).To(Equal("PT10S"))
 		})
@@ -97,7 +96,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 			Expect(reaper.Spec.ServerConfig.CassandraBackend.CassandraUserSecretName).To(Equal("cassandraSpecial"))
 			Expect(reaper.Spec.ServerConfig.JmxUserSecretName).To(Equal("somethingelse"))
 		})
@@ -110,7 +109,7 @@ var _ = Describe("Verify Reaper template", func() {
 				KubectlOptions: defaultKubeCtlOptions,
 			}
 
-			_ = renderTemplate(options)
+			renderTemplate(options)
 			Expect(reaper.Spec.ServerConfig.JmxUserSecretName).To(HavePrefix("nowyouseeme"))
 		})
 
@@ -167,73 +166,6 @@ var _ = Describe("Verify Reaper template", func() {
 					Effect:   corev1.TaintEffectNoSchedule,
 				},
 			))
-		})
-
-		It("has default container security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-			}
-			_ = renderTemplate(options)
-
-			Expect(reaper.Spec.SecurityContext).ToNot(BeNil())
-			Expect(*reaper.Spec.SecurityContext.ReadOnlyRootFilesystem).To(BeTrue())
-		})
-
-		It("has custom container security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-				ValuesFiles:    []string{"./testdata/reaper-security-context-custom-values.yaml"},
-			}
-			_ = renderTemplate(options)
-
-			Expect(reaper.Spec.SecurityContext).ToNot(BeNil())
-			Expect(*reaper.Spec.SecurityContext.RunAsGroup).
-				To(BeIdenticalTo(int64(8675309)))
-		})
-
-		It("has default init-container security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-			}
-			_ = renderTemplate(options)
-
-			Expect(reaper.Spec.SchemaInitContainerConfig).ToNot(BeNil())
-			Expect(reaper.Spec.SchemaInitContainerConfig.SecurityContext).ToNot(BeNil())
-			Expect(*reaper.Spec.SchemaInitContainerConfig.SecurityContext.ReadOnlyRootFilesystem).To(BeTrue())
-		})
-
-		It("has custom init-container security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-				ValuesFiles:    []string{"./testdata/reaper-security-context-custom-values.yaml"},
-			}
-			_ = renderTemplate(options)
-
-			Expect(reaper.Spec.SchemaInitContainerConfig).ToNot(BeNil())
-			Expect(reaper.Spec.SchemaInitContainerConfig.SecurityContext).
-				ToNot(BeNil())
-			Expect(*reaper.Spec.SchemaInitContainerConfig.SecurityContext.RunAsGroup).
-				To(BeIdenticalTo(int64(8675309)))
-		})
-
-		It("has default pod security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-			}
-			_ = renderTemplate(options)
-
-			Expect(reaper.Spec.PodSecurityContext).ToNot(BeNil())
-			Expect(reflect.DeepEqual(*reaper.Spec.PodSecurityContext, corev1.PodSecurityContext{})).To(BeTrue())
-		})
-
-		It("has custom pod security context", func() {
-			options := &helm.Options{
-				KubectlOptions: defaultKubeCtlOptions,
-				ValuesFiles:    []string{"./testdata/reaper-security-context-custom-values.yaml"},
-			}
-			_ = renderTemplate(options)
-
-			Expect(*reaper.Spec.PodSecurityContext.FSGroup).To(BeIdenticalTo(int64(1)))
 		})
 	})
 })

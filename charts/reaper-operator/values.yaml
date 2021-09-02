@@ -37,7 +37,6 @@ podAnnotations: {}
 # -- PodSecurityContext for the reaper-operator pod.
 podSecurityContext: {}
 
-# -- SecurityContext for the reaper-operator container.
 securityContext:
   # -- Mark root filesystem as read only
   readOnlyRootFilesystem: true
